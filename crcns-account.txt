@@ -1,0 +1,5 @@
+# Edit this file to contain your CRCNS.org account information
+# by inserting the correct information between the single quotes
+crcns_username=''
+crcns_password=''
+
