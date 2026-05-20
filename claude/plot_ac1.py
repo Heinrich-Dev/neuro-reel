@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
 from parse_ac1 import load_pepana
 
-PATH = '/mnt/user-data/uploads/ac1_u004_000.mat'
+PATH = 'pvc-1/crcns-ringach-data/neurodata/ac1/ac1_u004_000.mat'
 parsed = load_pepana(PATH)
 meta = parsed['meta']
 trials = parsed['trials']
@@ -118,7 +118,7 @@ fig.suptitle(f"{meta['animal']} unit {meta['unit']} — "
              f"(movie_id × segment_id)",
              fontsize=13, fontweight='bold')
 
-out_path = '/mnt/user-data/outputs/ac1_u004_summary.png'
+out_path = 'outputs/ac1_u004_summary.png'
 fig.savefig(out_path, dpi=140, bbox_inches='tight')
 print(f"Saved: {out_path}")
 print(f"Focus unit was electrode {focus_elec} "
