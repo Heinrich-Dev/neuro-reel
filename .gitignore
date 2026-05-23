@@ -1,4 +1,5 @@
-crcns-account.txt
+*.pyc
+*.txt
 gemini/pvc-1/
 .venv/
 venv/

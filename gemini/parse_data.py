@@ -2,7 +2,7 @@
 import scipy.io as sio
 import numpy as np
 
-FILE_PATH = './pvc-1/crcns-ringach-data/neurodata/ad1/ad1_u008_004.mat'
+FILE_PATH = './pvc-1/crcns-ringach-data/neurodata/ac1/ac1_u005_007.mat'
 
 def convert_pvc1_to_simple_format(file_path):
     """Converts a PVC-1 MATLAB file to a simple Python format.
@@ -56,7 +56,9 @@ def convert_pvc1_to_simple_format(file_path):
 
             symbols = list(result.symbols)
             if symbols[0] not in ('movie_id', 'r') or symbols[1] not in ('segment_id', 's'):
-                raise ValueError(f"Condition {condition}, repeat {repeat}, Expected symbols movie_id/r, segment_id/s, found {symbols[0]}, {symbols[1]}")
+                raise ValueError(f"Condition {condition}, repeat {repeat}, "
+                                 "Expected symbols movie_id/r, segment_id/s, "
+                                 "found {symbols[0]}, {symbols[1]}")
 
             seg_data = np.atleast_1d(result.repeat)[repeat]
             tzero = seg_data.tzero
@@ -68,7 +70,8 @@ def convert_pvc1_to_simple_format(file_path):
                 'tzero': tzero,
                 'timeTag': seg_data.timeTag,
                 'movie_id': safe_values[0],
-                'segment_id': safe_values[1] if len(safe_values) > 1 else None, # if segment_id is also used
+                'segment_id': safe_values[1] 
+                            if len(safe_values) > 1 else None, # if segment_id is also used
             }
             trial_idx += 1
 
@@ -93,14 +96,15 @@ def convert_pvc1_to_simple_format(file_path):
     for channel in range(sf['numChannels']):
         if len(sf['allSpikes'][channel]) > 0:
             sf['allSpikes'][channel] = np.concatenate(sf['allSpikes'][channel])
-            
+
             # Determine expected rows (e.g., 48)
             waveform_list = sf['allWaveforms'][channel]
             expected_rows = waveform_list[0].shape[0] if len(waveform_list) > 0 else 48
-            
+
             # Keep only items matching expected_rows
-            valid_waveforms = [w for w in waveform_list if w.ndim > 0 and w.shape[0] == expected_rows]
-            
+            valid_waveforms = [w for w in waveform_list 
+                               if w.ndim > 0 and w.shape[0] == expected_rows]
+
             if valid_waveforms:
                 sf['allWaveforms'][channel] = np.concatenate(valid_waveforms, axis=1)
             else:
@@ -116,8 +120,9 @@ def convert_pvc1_to_simple_format(file_path):
     return sf
 
 if __name__ == "__main__":
-    data = convert_pvc1_to_simple_format(FILE_PATH)
+    parsed_data = convert_pvc1_to_simple_format(FILE_PATH)
     print("Conversion successful!")
-    print(f"Total Channels: {data['numChannels']}")
-    for ch in range(data['numChannels']):
-        print(f"Channel {ch} spikes: {len(data['allSpikes'][ch])}")
+    print(f"Total Channels: {parsed_data['numChannels']}")
+    for ch in range(parsed_data['numChannels']):
+        print(f"Channel {ch} spikes: {len(parsed_data['allSpikes'][ch])}")
+        print(f"Channel {ch} waveforms: {parsed_data['allWaveforms'][ch].shape}")
