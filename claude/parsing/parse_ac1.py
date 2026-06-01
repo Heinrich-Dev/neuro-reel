@@ -88,7 +88,7 @@ def summarize(parsed):
  
  
 if __name__ == '__main__':
-    file_path = "pvc-1/crcns-ringach-data/neurodata/ac1/ac1_u004_000.mat"
+    file_path = "data/pvc-1/crcns-ringach-data/neurodata/ac1/ac1_u009_001.mat"
     parsed = load_pepana(file_path)
     summarize(parsed)
  
@@ -98,4 +98,3 @@ if __name__ == '__main__':
     print(f"\nExample — trial 0, condition {t0['condition']}:")
     print(f"  elec{parsed['meta']['electrodes'][0]} fired {rep['units'][0]['spike_times'].size} spikes")
     print(f"  first 8 spike times (s): {rep['units'][0]['spike_times'][:8]}")
-    print(f"  waveform array shape: {rep['units'][0]['waveforms'].shape}")
