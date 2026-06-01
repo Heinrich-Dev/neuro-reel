@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>V1 Neural Response Predictor</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>V1 Neural Response Predictor</h1>
+      <p class="subtitle">
+        Upload a video clip. The model predicts the firing rates of 16
+        primary visual cortex electrodes recorded from cat V1 (CRCNS pvc-1).
+      </p>
+    </header>
+
+    <main>
+      <section class="card upload-card">
+        <h2>Upload a clip</h2>
+        <p class="muted">
+          The first {{ target_duration }} seconds will be analyzed at
+          {{ target_fps }} fps. Anything longer is truncated.
+          Frames are resized to 320×240 grayscale to match the trained model.
+        </p>
+
+        <form id="upload-form">
+          <label for="video" class="file-label">
+            <span class="file-cta">Choose video</span>
+            <span id="file-name" class="file-name">no file selected</span>
+          </label>
+          <input type="file" id="video" name="video"
+                 accept="video/mp4,video/quicktime,video/x-msvideo,video/x-matroska,video/webm">
+
+          <button type="submit" id="submit-btn" disabled>Run prediction</button>
+          <p class="muted small">
+            Max upload: {{ max_size_mb }} MB. Allowed: .mp4, .mov, .avi, .mkv, .webm, .m4v
+          </p>
+        </form>
+
+        <div id="status" class="status hidden"></div>
+      </section>
+
+      <section class="card info-card">
+        <h3>What it does</h3>
+        <p>
+          A factorized CNN encoder (Klindt-style) is trained per recording session
+          on a single Ringach-lab pepANA file. It predicts a 16-channel firing-rate
+          time series at ~30 Hz from the stimulus history of the past ~270 ms,
+          with a 60 ms response latency.
+        </p>
+        <p class="muted small">
+          This is a proof of concept. Predictions reflect what the model learned
+          about <em>these 16 electrodes from one penetration in one animal</em>,
+          not visual cortex in general.
+        </p>
+      </section>
+    </main>
+  </div>
+
+  <script>
+    const fileInput = document.getElementById('video');
+    const fileName = document.getElementById('file-name');
+    const submitBtn = document.getElementById('submit-btn');
+    const status = document.getElementById('status');
+
+    fileInput.addEventListener('change', () => {
+      const f = fileInput.files[0];
+      if (f) {
+        fileName.textContent = f.name + ' (' + (f.size / 1024 / 1024).toFixed(1) + ' MB)';
+        submitBtn.disabled = false;
+      } else {
+        fileName.textContent = 'no file selected';
+        submitBtn.disabled = true;
+      }
+    });
+
+    document.getElementById('upload-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const f = fileInput.files[0];
+      if (!f) return;
+
+      const fd = new FormData();
+      fd.append('video', f);
+      submitBtn.disabled = true;
+      status.classList.remove('hidden');
+      status.textContent = 'Uploading…';
+
+      try {
+        const r = await fetch('/upload', { method: 'POST', body: fd });
+        const j = await r.json();
+        if (!r.ok) {
+          status.textContent = 'Error: ' + (j.error || r.statusText);
+          submitBtn.disabled = false;
+          return;
+        }
+        // Redirect to results page
+        window.location.href = '/job/' + j.job_id;
+      } catch (err) {
+        status.textContent = 'Upload failed: ' + err.message;
+        submitBtn.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>

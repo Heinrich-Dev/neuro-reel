@@ -1,0 +1,423 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>V1 Predictor — Results</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>V1 Predictor</h1>
+      <div class="meta-bar">
+        <span>job <strong id="job-id">{{ job_id }}</strong></span>
+        <span><a href="/">← upload another</a></span>
+      </div>
+    </header>
+
+    <main>
+      <!-- progress / status -->
+      <section id="progress-card" class="card progress-card">
+        <h2>Processing</h2>
+        <div class="progress-bar"><div id="progress-fill" class="progress-bar-fill"></div></div>
+        <div id="progress-msg" class="progress-message">Queued…</div>
+      </section>
+
+      <!-- error -->
+      <section id="error-card" class="card hidden">
+        <h2 style="color: var(--warn);">Error</h2>
+        <pre id="error-msg" style="font-family: var(--font-mono); font-size: 12px; color: var(--text-dim); white-space: pre-wrap;"></pre>
+      </section>
+
+      <!-- results -->
+      <section id="results" class="hidden">
+
+        <section class="card heatmap-card">
+          <div class="heatmap-header">
+            <h2>Predicted activity — 16 electrodes</h2>
+            <span class="heatmap-instruction">click a row ↓ to drill in</span>
+          </div>
+          <div class="heatmap-wrapper">
+            <div id="heatmap-labels" class="heatmap-labels"></div>
+            <div class="heatmap-canvas-wrap">
+              <canvas id="heatmap" width="900" height="320"></canvas>
+              <div id="row-indicator" class="row-indicator"></div>
+            </div>
+            <div class="colorbar-stack">
+              <div class="colorbar-gradient"></div>
+              <div class="colorbar-labels" id="colorbar-labels">
+                <span>—</span><span>—</span>
+              </div>
+            </div>
+          </div>
+          <div class="heatmap-xaxis" id="xaxis"></div>
+        </section>
+
+        <section class="card drill-card">
+          <div id="drill-empty" class="drill-empty">
+            select an electrode above
+          </div>
+          <div id="drill-content" class="hidden">
+            <div class="drill-title">
+              <h2>Electrode <span id="d-elec-id" class="elec-id">—</span></h2>
+              <div class="stats">
+                <div class="stat">
+                  <span class="stat-lbl">predicted mean</span>
+                  <span id="d-pred-rate" class="stat-val">—</span>
+                </div>
+                <div class="stat">
+                  <span class="stat-lbl">baseline mean</span>
+                  <span id="d-base-rate" class="stat-val">—</span>
+                </div>
+                <div class="stat">
+                  <span class="stat-lbl">vs baseline</span>
+                  <span id="d-delta" class="stat-val">—</span>
+                </div>
+              </div>
+            </div>
+            <div class="drill-grid">
+              <div class="plot-box">
+                <h3>Predicted firing rate over clip</h3>
+                <svg id="psth" viewBox="0 0 600 240" width="100%" height="240"></svg>
+              </div>
+              <div class="plot-box">
+                <h3>Recorded waveform (ac1)</h3>
+                <svg id="waveform" viewBox="0 0 320 240" width="100%" height="240"></svg>
+              </div>
+            </div>
+          </div>
+        </section>
+
+      </section>
+    </main>
+
+    <footer>
+      cnn encoder · 16-channel readout · model ingests 320×240 grayscale, 8-frame history · 30 fps · 60 ms latency
+    </footer>
+  </div>
+
+  <script>
+    const JOB_ID = "{{ job_id }}";
+    let RESULTS = null;
+    let BASELINE = null;
+    let SELECTED = null;
+
+    /* ------------------------------------------------------------------ */
+    /* polling                                                            */
+    /* ------------------------------------------------------------------ */
+    async function poll() {
+      try {
+        const r = await fetch(`/api/job/${JOB_ID}`);
+        const j = await r.json();
+
+        document.getElementById('progress-fill').style.width = (j.progress || 0) + '%';
+        document.getElementById('progress-msg').textContent  = j.message || j.status;
+
+        if (j.status === 'error') {
+          document.getElementById('progress-card').classList.add('hidden');
+          document.getElementById('error-card').classList.remove('hidden');
+          document.getElementById('error-msg').textContent =
+            (j.message || 'unknown') + '\n\n' + (j.traceback || '');
+          return;
+        }
+        if (j.status === 'done') {
+          RESULTS = j.results;
+          BASELINE = await (await fetch('/baseline')).json();
+          document.getElementById('progress-card').classList.add('hidden');
+          document.getElementById('results').classList.remove('hidden');
+          renderHeatmap();
+          return;
+        }
+      } catch (e) {
+        document.getElementById('progress-msg').textContent =
+          'polling error: ' + e.message;
+      }
+      setTimeout(poll, 800);
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* heatmap                                                            */
+    /* ------------------------------------------------------------------ */
+    function renderHeatmap() {
+      const canvas = document.getElementById('heatmap');
+      const ctx = canvas.getContext('2d');
+
+      const rates = RESULTS.rates_hz;           // (n_bins, n_elec)
+      const n_bins = rates.length;
+      const n_elec = rates[0].length;
+      const times = RESULTS.times_s;
+
+      // colormap range — robust max so a single noisy bin doesn't wash it out
+      const flat = rates.flat();
+      flat.sort((a, b) => a - b);
+      const vmin = 0;
+      const vmax = Math.max(1, flat[Math.floor(flat.length * 0.99)]);
+      document.getElementById('colorbar-labels').innerHTML =
+        `<span>${vmax.toFixed(0)} Hz</span><span>0</span>`;
+
+      // Set canvas resolution
+      const W = 900, H = n_elec * 22;
+      canvas.width = W;
+      canvas.height = H;
+
+      const img = ctx.createImageData(W, H);
+      const cellW = W / n_bins;
+      const cellH = H / n_elec;
+
+      // Color stops (matches CSS gradient)
+      function color(t) {                       // t in [0,1]
+        // black -> brown -> amber -> cream
+        const stops = [
+          [0.00, [11, 13, 18]],
+          [0.25, [58, 36, 16]],
+          [0.50, [140, 90, 20]],
+          [0.75, [212, 160, 23]],
+          [1.00, [240, 226, 154]],
+        ];
+        for (let i = 1; i < stops.length; i++) {
+          if (t <= stops[i][0]) {
+            const [t0, c0] = stops[i - 1];
+            const [t1, c1] = stops[i];
+            const a = (t - t0) / (t1 - t0);
+            return [c0[0] + a*(c1[0]-c0[0]),
+                    c0[1] + a*(c1[1]-c0[1]),
+                    c0[2] + a*(c1[2]-c0[2])];
+          }
+        }
+        return stops[stops.length - 1][1];
+      }
+
+      for (let e = 0; e < n_elec; e++) {
+        for (let b = 0; b < n_bins; b++) {
+          const v = (rates[b][e] - vmin) / (vmax - vmin);
+          const t = Math.max(0, Math.min(1, v));
+          const [r, g, bl] = color(t);
+          // Fill the cellW × cellH block of pixels
+          const x0 = Math.floor(b * cellW);
+          const x1 = Math.floor((b + 1) * cellW);
+          const y0 = Math.floor(e * cellH);
+          const y1 = Math.floor((e + 1) * cellH);
+          for (let y = y0; y < y1; y++) {
+            for (let x = x0; x < x1; x++) {
+              const idx = (y * W + x) * 4;
+              img.data[idx]   = r;
+              img.data[idx+1] = g;
+              img.data[idx+2] = bl;
+              img.data[idx+3] = 255;
+            }
+          }
+        }
+      }
+      ctx.putImageData(img, 0, 0);
+
+      // x-axis labels
+      const xaxis = document.getElementById('xaxis');
+      const tMax = times[times.length - 1];
+      const ticks = [0, 0.25, 0.5, 0.75, 1].map(f => f * tMax);
+      xaxis.innerHTML = ticks.map(t => `<span>${t.toFixed(1)} s</span>`).join('');
+
+      // electrode labels
+      const labelsEl = document.getElementById('heatmap-labels');
+      labelsEl.innerHTML = '';
+      for (let e = 0; e < n_elec; e++) {
+        const el = document.createElement('div');
+        el.className = 'label';
+        el.dataset.idx = e;
+        el.textContent = 'e' + BASELINE.electrodes[e];
+        el.addEventListener('click', () => selectElectrode(e));
+        labelsEl.appendChild(el);
+      }
+
+      // click to drill down
+      canvas.addEventListener('click', (ev) => {
+        const rect = canvas.getBoundingClientRect();
+        const y = (ev.clientY - rect.top) / rect.height;
+        const e = Math.min(n_elec - 1, Math.max(0, Math.floor(y * n_elec)));
+        selectElectrode(e);
+      });
+
+      // sensible default: pick the highest-mean predicted electrode
+      const means = RESULTS.mean_rate_hz;
+      const top = means.indexOf(Math.max(...means));
+      selectElectrode(top);
+    }
+
+    function selectElectrode(e) {
+      SELECTED = e;
+      // Update label highlighting
+      const labels = document.querySelectorAll('#heatmap-labels .label');
+      labels.forEach((el, i) => el.classList.toggle('active', i === e));
+
+      // Position row indicator overlay
+      const canvas = document.getElementById('heatmap');
+      const rect = canvas.getBoundingClientRect();
+      const n_elec = RESULTS.rates_hz[0].length;
+      const ri = document.getElementById('row-indicator');
+      ri.style.display = 'block';
+      ri.style.top    = (e / n_elec * 100) + '%';
+      ri.style.height = (1 / n_elec * 100) + '%';
+
+      // Show drill panel
+      document.getElementById('drill-empty').classList.add('hidden');
+      document.getElementById('drill-content').classList.remove('hidden');
+
+      const elecId = BASELINE.electrodes[e];
+      document.getElementById('d-elec-id').textContent = elecId;
+
+      const predMean = RESULTS.mean_rate_hz[e];
+      const baseMean = BASELINE.mean_rate_hz[e];
+      const delta = predMean - baseMean;
+      const pct = baseMean > 0 ? (delta / baseMean * 100) : 0;
+      document.getElementById('d-pred-rate').textContent = predMean.toFixed(1) + ' Hz';
+      document.getElementById('d-base-rate').textContent = baseMean.toFixed(1) + ' Hz';
+
+      const dEl = document.getElementById('d-delta');
+      const arrow = delta >= 0 ? '▲' : '▼';
+      dEl.textContent = `${arrow} ${Math.abs(pct).toFixed(0)}%`;
+      dEl.className = 'stat-val ' + (delta >= 0 ? 'hi' : 'lo');
+
+      drawPSTH(e);
+      drawWaveform(e);
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* PSTH plot (SVG)                                                    */
+    /* ------------------------------------------------------------------ */
+    function drawPSTH(e) {
+      const svg = document.getElementById('psth');
+      const W = 600, H = 240;
+      const margin = { l: 44, r: 12, t: 12, b: 28 };
+      const pw = W - margin.l - margin.r;
+      const ph = H - margin.t - margin.b;
+
+      const rates = RESULTS.rates_hz;
+      const times = RESULTS.times_s;
+      const n_bins = rates.length;
+      const series = rates.map(r => r[e]);
+      const yMax = Math.max(...series, BASELINE.mean_rate_hz[e]) * 1.1 + 1;
+      const xMax = times[times.length - 1];
+
+      function sx(t) { return margin.l + t / xMax * pw; }
+      function sy(v) { return margin.t + (1 - v / yMax) * ph; }
+
+      // baseline mean line
+      const base = BASELINE.mean_rate_hz[e];
+
+      // Build the predicted-rate path
+      let path = '';
+      for (let i = 0; i < n_bins; i++) {
+        path += (i === 0 ? 'M' : 'L') + sx(times[i]).toFixed(1) + ',' + sy(series[i]).toFixed(1) + ' ';
+      }
+      // Fill area
+      let fill = path + `L${sx(xMax).toFixed(1)},${sy(0).toFixed(1)} L${sx(0).toFixed(1)},${sy(0).toFixed(1)} Z`;
+
+      // Y-axis ticks (4 evenly spaced)
+      const yTicks = [0, 0.25, 0.5, 0.75, 1].map(f => f * yMax);
+      const xTicks = [0, 0.25, 0.5, 0.75, 1].map(f => f * xMax);
+
+      svg.innerHTML = `
+        <defs>
+          <linearGradient id="psth-fill" x1="0" x2="0" y1="0" y2="1">
+            <stop offset="0%" stop-color="#4ec9b0" stop-opacity="0.45"/>
+            <stop offset="100%" stop-color="#4ec9b0" stop-opacity="0.04"/>
+          </linearGradient>
+        </defs>
+        <g class="grid">
+          ${yTicks.map(t => `<line x1="${margin.l}" x2="${W-margin.r}" y1="${sy(t)}" y2="${sy(t)}"/>`).join('')}
+        </g>
+        <path d="${fill}" fill="url(#psth-fill)" stroke="none"/>
+        <path d="${path}" stroke="#4ec9b0" stroke-width="1.4" fill="none"/>
+        <line x1="${margin.l}" x2="${W-margin.r}" y1="${sy(base)}" y2="${sy(base)}"
+              stroke="#6c7a93" stroke-width="1" stroke-dasharray="4 3"/>
+        <text x="${W-margin.r-4}" y="${sy(base)-4}" text-anchor="end"
+              fill="#6c7a93" font-family="IBM Plex Mono" font-size="10">baseline ${base.toFixed(1)} Hz</text>
+        <g class="axis">
+          <line x1="${margin.l}" x2="${W-margin.r}" y1="${H-margin.b}" y2="${H-margin.b}"/>
+          <line x1="${margin.l}" x2="${margin.l}" y1="${margin.t}" y2="${H-margin.b}"/>
+          ${yTicks.map(t => `
+            <text x="${margin.l-6}" y="${sy(t)+3}" text-anchor="end">${t.toFixed(0)}</text>
+          `).join('')}
+          ${xTicks.map(t => `
+            <text x="${sx(t)}" y="${H-margin.b+14}" text-anchor="middle">${t.toFixed(1)}</text>
+          `).join('')}
+          <text x="${margin.l-32}" y="${margin.t+ph/2}" transform="rotate(-90 ${margin.l-32} ${margin.t+ph/2})"
+                text-anchor="middle">Hz</text>
+          <text x="${margin.l+pw/2}" y="${H-4}" text-anchor="middle">time (s)</text>
+        </g>
+      `;
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* Waveform plot (SVG) — from recorded ac1 data                       */
+    /* ------------------------------------------------------------------ */
+    function drawWaveform(e) {
+      const svg = document.getElementById('waveform');
+      const W = 320, H = 240;
+      const margin = { l: 36, r: 12, t: 12, b: 28 };
+      const pw = W - margin.l - margin.r;
+      const ph = H - margin.t - margin.b;
+
+      const m = BASELINE.waveform_mean[e];
+      const s = BASELINE.waveform_std[e];
+      const n = m.length;
+      const sr = BASELINE.waveform_sample_rate_hz;
+      const t = Array.from({length: n}, (_, i) => i / sr * 1000); // ms
+      const tMax = t[t.length - 1];
+
+      let yMin = Infinity, yMax = -Infinity;
+      for (let i = 0; i < n; i++) {
+        yMin = Math.min(yMin, m[i] - s[i]);
+        yMax = Math.max(yMax, m[i] + s[i]);
+      }
+      const pad = (yMax - yMin) * 0.1;
+      yMin -= pad; yMax += pad;
+
+      function sx(x) { return margin.l + x / tMax * pw; }
+      function sy(v) { return margin.t + (1 - (v - yMin) / (yMax - yMin)) * ph; }
+
+      // Build the ± SD band path
+      let topPath = '';
+      let botPath = '';
+      for (let i = 0; i < n; i++) {
+        topPath += (i === 0 ? 'M' : 'L') + sx(t[i]) + ',' + sy(m[i] + s[i]) + ' ';
+        botPath += (i === 0 ? 'L' : 'L') + sx(t[i]) + ',' + sy(m[i] - s[i]) + ' ';
+      }
+      // Reverse the bottom path
+      let botReversed = '';
+      for (let i = n - 1; i >= 0; i--) {
+        botReversed += (i === n - 1 ? 'L' : 'L') + sx(t[i]) + ',' + sy(m[i] - s[i]) + ' ';
+      }
+      const bandPath = topPath + botReversed + 'Z';
+
+      let meanPath = '';
+      for (let i = 0; i < n; i++) {
+        meanPath += (i === 0 ? 'M' : 'L') + sx(t[i]) + ',' + sy(m[i]) + ' ';
+      }
+
+      const xTicks = [0, 0.5, 1.0, 1.5, 2.0].filter(x => x <= tMax);
+      const yZero = sy(0);
+
+      svg.innerHTML = `
+        <path d="${bandPath}" fill="#d4a017" fill-opacity="0.18" stroke="none"/>
+        <path d="${meanPath}" stroke="#d4a017" stroke-width="1.6" fill="none"/>
+        <line x1="${margin.l}" x2="${W-margin.r}" y1="${yZero}" y2="${yZero}"
+              stroke="#5a6377" stroke-width="0.5" stroke-dasharray="2 3"/>
+        <g class="axis">
+          <line x1="${margin.l}" x2="${W-margin.r}" y1="${H-margin.b}" y2="${H-margin.b}"/>
+          <line x1="${margin.l}" x2="${margin.l}" y1="${margin.t}" y2="${H-margin.b}"/>
+          <text x="${margin.l-6}" y="${sy(yMin)+3}" text-anchor="end">${yMin.toFixed(0)}</text>
+          <text x="${margin.l-6}" y="${sy(yMax)+3}" text-anchor="end">${yMax.toFixed(0)}</text>
+          <text x="${margin.l-6}" y="${yZero+3}" text-anchor="end">0</text>
+          ${xTicks.map(x => `
+            <text x="${sx(x)}" y="${H-margin.b+14}" text-anchor="middle">${x.toFixed(1)}</text>
+          `).join('')}
+          <text x="${margin.l+pw/2}" y="${H-4}" text-anchor="middle">ms</text>
+        </g>
+      `;
+    }
+
+    /* start ----------------------------------------------------------- */
+    poll();
+  </script>
+</body>
+</html>
