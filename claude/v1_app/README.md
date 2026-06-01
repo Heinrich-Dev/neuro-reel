@@ -88,3 +88,21 @@ The checkpoint determines `n_electrodes` and input `(H, W)` automatically;
 `best_v1_model.pt` and rerun `precompute_baseline.py` with the matching
 `.mat` file. Frame-extraction size is derived from the constants
 `TARGET_W`/`TARGET_H` in `app.py` — keep these in sync with the model.
+
+## First Usage
+tar -xzf v1_app.tar.gz
+cd v1_app/
+
+# put your reference .mat file here (the one matching the checkpoint)
+cp /path/to/ac1_u004_000.mat .
+
+# install deps
+pip install flask torch numpy scipy pillow
+# plus ffmpeg via your system package manager
+
+# precompute baselines (one-time)
+python3 precompute_baseline.py
+
+# run
+python3 app.py
+# open http://localhost:5000
